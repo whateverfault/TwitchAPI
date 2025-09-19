@@ -265,25 +265,29 @@ public class TwitchClient : ITwitchClient {
         
         return Task.Run(async () => {
                             while (true) {
-                                QueuedMessage queuedMessage;
-                                lock (_messageLock) { 
-                                    if (!_messageQueue.TryDequeue(out queuedMessage)) Thread.Sleep(TimeSpan.FromMilliseconds(100)); 
-                                } 
-                                if (string.IsNullOrEmpty(queuedMessage.ReplyId)) { 
+                                Thread.Sleep(TimeSpan.FromMilliseconds(100));
+                                
+                                QueuedMessage message;
+                                lock (_messageLock) {
+                                    if (!_messageQueue.TryDequeue(out message)) {
+                                        continue;
+                                    } 
+                                }
+                                
+                                if (string.IsNullOrEmpty(message.ReplyId)) { 
                                     await Helix.SendMessage(
-                                                            queuedMessage.Message, 
+                                                            message.Message, 
                                                             Credentials, 
                                                             OnError
                                                            ); 
                                 }
                                 else { 
                                     await Helix.SendReply(
-                                                          queuedMessage.Message,
-                                                          queuedMessage.ReplyId,
+                                                          message.Message,
+                                                          message.ReplyId,
                                                           Credentials,
                                                           OnError
                                                          ); 
-                                    Thread.Sleep(TimeSpan.FromMilliseconds(100)); 
                                 } 
                             }
                         });

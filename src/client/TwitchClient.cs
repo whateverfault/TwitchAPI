@@ -16,9 +16,23 @@ public enum LogLevel {
     Warning,
 }
 
+internal struct QueuedMessage {
+    public string Message;
+    public string? ReplyId;
+    
+    
+    public QueuedMessage(string message, string? replyId = null) {
+        Message = message;
+        ReplyId = replyId;
+    }
+}
+
 public class TwitchClient : ITwitchClient {
     private readonly CommandParser _commandParser;
     private TwitchEventSubWebSocket? _websocket;
+
+    private readonly object _messageLock = new object();
+    private readonly Queue<QueuedMessage> _messageQueue;
 
     private Badge[]? _globalBadges;
     private Badge[]? _channelBadges;
@@ -34,6 +48,7 @@ public class TwitchClient : ITwitchClient {
     
     public TwitchClient(char? commandIdentifier = null) {
         _commandParser = new CommandParser(commandIdentifier);
+        _messageQueue = new Queue<QueuedMessage>();
         InitializeWebSocket();
     }
 
@@ -66,6 +81,7 @@ public class TwitchClient : ITwitchClient {
                                               channelInfo.Id
                                              );
     
+            _ = SendMessages();
             await _websocket.ConnectAsync();
             _websocket.OnSessionStarted += SubscribeToChat;
             
@@ -79,8 +95,8 @@ public class TwitchClient : ITwitchClient {
                     var result = await EventSub.SubscribeToChannelChat(_websocket.SessionId, Credentials, OnError);
                     if (result?.Id == null) return;
                 
-                    _websocket.SetSubscriptionId(result.Id);
                     _websocket.OnSessionStarted -= SubscribeToChat;
+                    _websocket.SetSubscriptionId(result.Id);
                     OnConnected?.Invoke(this, EventArgs.Empty);
                 }
                 catch (Exception ex) {
@@ -125,31 +141,16 @@ public class TwitchClient : ITwitchClient {
         OnDisconnected?.Invoke(this, "Disconnected.");
     }
     
-    public async Task SendMessage(string message) {
+    public Task SendMessage(string message, string? replyId = null) {
         if (Credentials == null) {
             OnError?.Invoke(this, "Couldn't send a message. Not initialized.");
-            return;
+            return Task.CompletedTask;
         }
-        
-        await Helix.SendMessage(
-                                message, 
-                                Credentials, 
-                                OnError
-                                );
-    }
-    
-    public async Task SendReply(string replyId, string message) {
-        if (Credentials == null) {
-            OnError?.Invoke(this, "Couldn't send a message. Not initialized.");
-            return;
+
+        lock (_messageLock) {
+            _messageQueue.Enqueue(new QueuedMessage(message, replyId));
         }
-        
-        await Helix.SendReply(
-                                 message,
-                                 replyId,
-                                 Credentials,
-                                 OnError
-                                 );
+        return Task.CompletedTask;
     }
 
     public bool SetCommandIdentifier(char identifier) {
@@ -257,5 +258,34 @@ public class TwitchClient : ITwitchClient {
     
     private void OnConnectionClosed(object? sender, string message) {
         OnDisconnected?.Invoke(sender, message);
+    }
+
+    private Task SendMessages() {
+        if (Credentials == null) return Task.CompletedTask;
+        
+        return Task.Run(async () => {
+                            while (true) {
+                                QueuedMessage queuedMessage;
+                                lock (_messageLock) { 
+                                    if (!_messageQueue.TryDequeue(out queuedMessage)) Thread.Sleep(TimeSpan.FromMilliseconds(100)); 
+                                } 
+                                if (string.IsNullOrEmpty(queuedMessage.ReplyId)) { 
+                                    await Helix.SendMessage(
+                                                            queuedMessage.Message, 
+                                                            Credentials, 
+                                                            OnError
+                                                           ); 
+                                }
+                                else { 
+                                    await Helix.SendReply(
+                                                          queuedMessage.Message,
+                                                          queuedMessage.ReplyId,
+                                                          Credentials,
+                                                          OnError
+                                                         ); 
+                                    Thread.Sleep(TimeSpan.FromMilliseconds(100)); 
+                                } 
+                            }
+                        });
     }
 }

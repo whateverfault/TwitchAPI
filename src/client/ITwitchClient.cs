@@ -20,9 +20,7 @@ public interface ITwitchClient {
     
     public Task Disconnect();
     
-    public Task SendMessage(string message);
-    
-    public Task SendReply(string replyId, string message);
+    public Task SendMessage(string message, string? replyId = null);
 
     public bool SetCommandIdentifier(char identifier);
 

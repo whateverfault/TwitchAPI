@@ -75,10 +75,8 @@ public class ChatMessage {
         foreach (var fragment in e.Message.Fragments) {
             if (fragment.Type == "mention") continue;
 
-            var processed = fragment.Text
-                                    .Replace($"{(char)56128}", "")
-                                    .Replace($"{(char)56320}", "")
-                                    .Trim();
+            var processed = Sanitize(fragment.Text);
+            
             message.Append($"{processed} ");
         }
 
@@ -153,5 +151,23 @@ public class ChatMessage {
                 }
             }
         }
+    }
+
+    private static string Sanitize(string message) {
+        var sb = new StringBuilder();
+
+        foreach (var c in message
+                         .Replace($"{(char)56128}", "")
+                         .Replace($"{(char)56320}", "")
+                         .Replace($"{(char)847}", "")
+                         .Trim()) {
+            if (!char.IsLowSurrogate(c)
+             && !char.IsHighSurrogate(c)
+             && !char.IsControl(c)) {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
     }
 }

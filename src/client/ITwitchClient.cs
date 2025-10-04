@@ -21,6 +21,7 @@ public interface ITwitchClient {
     public Task Disconnect();
     
     public Task SendMessage(string message, string? replyId = null);
+    public Task SendWhisper(string message, string userId);
 
     public bool SetCommandIdentifier(char identifier);
 

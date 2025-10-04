@@ -19,11 +19,13 @@ public enum LogLevel {
 internal struct QueuedMessage {
     public string Message;
     public string? ReplyId;
+    public bool IsWhisper;
     
     
-    public QueuedMessage(string message, string? replyId = null) {
+    public QueuedMessage(string message, string? replyId = null, bool isWhisper = false) {
         Message = message;
         ReplyId = replyId;
+        IsWhisper = isWhisper;
     }
 }
 
@@ -153,6 +155,18 @@ public class TwitchClient : ITwitchClient {
         return Task.CompletedTask;
     }
 
+    public Task SendWhisper(string message, string userId) {
+        if (Credentials == null) {
+            OnError?.Invoke(this, "Couldn't send a message. Not initialized.");
+            return Task.CompletedTask;
+        }
+
+        lock (_messageLock) {
+            _messageQueue.Enqueue(new QueuedMessage(message, userId, isWhisper: true));
+        }
+        return Task.CompletedTask;
+    }
+    
     public bool SetCommandIdentifier(char identifier) {
         return _commandParser.SetCommandIdentifier(identifier);
     }
@@ -281,13 +295,23 @@ public class TwitchClient : ITwitchClient {
                                                             OnError
                                                            ); 
                                 }
-                                else { 
-                                    await Helix.SendReply(
-                                                          message.Message,
-                                                          message.ReplyId,
-                                                          Credentials,
-                                                          OnError
-                                                         ); 
+                                else {
+                                    if (message.IsWhisper) {
+                                        await Helix.SendWhisper(
+                                                              message.ReplyId,
+                                                              message.Message,
+                                                              Credentials,
+                                                              OnError
+                                                             );
+                                    }
+                                    else {
+                                        await Helix.SendReply(
+                                                              message.Message,
+                                                              message.ReplyId,
+                                                              Credentials,
+                                                              OnError
+                                                             );
+                                    }
                                 } 
                             }
                         });

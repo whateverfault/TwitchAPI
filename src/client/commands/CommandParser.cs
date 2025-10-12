@@ -5,13 +5,13 @@ using TwitchAPI.client.data;
 namespace TwitchAPI.client.commands;
 
 public class CommandParser {
-    private const char DefaultIdentifier = '!';
+    private const char DEFAULT_IDENTIFIER = '!';
 
     private char _commandIdentifier;
     
     
     public CommandParser(char? identifier = null) {
-        _commandIdentifier = identifier ?? DefaultIdentifier;
+        _commandIdentifier = identifier ?? DEFAULT_IDENTIFIER;
     }
     
     public Command? Parse(ChatMessage chatMessage) {

@@ -37,7 +37,7 @@ public static class Helix {
             return null;
         }
         catch (Exception e) {
-            callback?.Invoke(null, $"Exception while validating an oauth token. {e}");
+            callback?.Invoke(null, $"Exception while validating an oauth token. {e.Message}");
             return null;
         }
     }
@@ -172,14 +172,8 @@ public static class Helix {
         }
     }
     
-        public static async Task TimeoutUserHelix(string username, string message, TimeSpan durationSeconds, FullCredentials credentials, EventHandler<string>? callback = null) {
+        public static async Task<bool> TimeoutUser(string userId, string message, TimeSpan durationSeconds, FullCredentials credentials, EventHandler<string>? callback = null) {
         try {
-            var userId = await GetUserId(username, credentials.Oauth, credentials.ClientId, callback);
-            if (userId == null) {
-                callback?.Invoke(null, "Failed to timeout a user: User Id is null.");
-                return;
-            }
-            
             var payload = new
                           {
                               data = new
@@ -198,14 +192,16 @@ public static class Helix {
             requestMessage.Headers.Add("Authorization", $"Bearer {credentials.Oauth}");
 
             var response = await _httpClient.SendAsync(requestMessage);
-            if (!response.IsSuccessStatusCode) {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                callback?.Invoke(null, $"Failed to timeout {username}. Status: {response.StatusCode}. Response: {responseContent}");
-            }
+            var responseContent = await response.Content.ReadAsStringAsync();
+
+            if (response.IsSuccessStatusCode) return true;
+            
+            callback?.Invoke(null, $"Failed to timeout {userId}. Status: {response.StatusCode}. Response: {responseContent}");
         }
         catch (Exception ex) {
             callback?.Invoke(null, $"Error timing out user: {ex.Message}");
         }
+        return false;
     }
     
     public static async Task DeleteMessage(ChatMessage message, FullCredentials credentials, EventHandler<string>? callback = null) {
@@ -576,7 +572,7 @@ public static class Helix {
             callback?.Invoke(null, $"Failed to get stream info for {username}. Status: {response.StatusCode}. Response: {responseContent}");
         }
         catch (Exception ex) {
-            callback?.Invoke(null, $"Exception while getting stream info: {ex}");
+            callback?.Invoke(null, $"Exception while getting stream info: {ex.Message}");
         }
         return null;
     }
@@ -612,53 +608,65 @@ public static class Helix {
     }
     
     public static async Task<string?> GetUserId(string username, string oauth, string clientId, EventHandler<string>? callback = null) {
-        var userInfo = await GetUserInfoByUsername(username, oauth, clientId);
-        if (userInfo == null) {
-            callback?.Invoke(null, $"Couldn't get info of user '{username}'");
-            return null;
-        }
+        try {
+            var userInfo = await GetUserInfoByUsername(username, oauth, clientId);
+            if (userInfo == null) {
+                callback?.Invoke(null, $"Couldn't get info of user '{username}'");
+                return null;
+            }
 
-        if (!string.IsNullOrEmpty(userInfo.Id)) {
-            return userInfo.Id;
-        }
+            if (!string.IsNullOrEmpty(userInfo.Id)) {
+                return userInfo.Id;
+            }
 
-        callback?.Invoke(null, $"User {username} not found");
+            callback?.Invoke(null, $"User {username} not found");
+        } catch (Exception e) {
+            callback?.Invoke(null, $"Exception while getting a user id: {e.Message}");
+        }
         return null;
     }
     
     public static async Task<string?> GetUserId(string username, FullCredentials credentials, EventHandler<string>? callback = null) {
-        var userInfo = await GetUserInfoByUsername(username, credentials.Oauth, credentials.ClientId);
-        if (userInfo == null) {
-            callback?.Invoke(null, $"Couldn't get info of user '{username}'");
-            return null;
-        }
+        try {
+            var userInfo = await GetUserInfoByUsername(username, credentials.Oauth, credentials.ClientId);
+            if (userInfo == null) {
+                callback?.Invoke(null, $"Couldn't get info of user '{username}'");
+                return null;
+            }
 
-        if (!string.IsNullOrEmpty(userInfo.Id)) {
-            return userInfo.Id;
-        }
+            if (!string.IsNullOrEmpty(userInfo.Id)) {
+                return userInfo.Id;
+            }
 
-        callback?.Invoke(null, $"User {username} not found");
+            callback?.Invoke(null, $"User {username} not found");
+        } catch (Exception e) {
+            callback?.Invoke(null, $"Exception while getting a user id: {e.Message}");
+        }
         return null;
     }
     
     public static async Task<string?> GetUsername(string userId, FullCredentials credentials, bool displayName = false, EventHandler<string>? callback = null) {
-        var userInfo = await GetUserInfoByUserId(userId, credentials.Oauth, credentials.ClientId);
-        if (userInfo == null) {
-            callback?.Invoke(null, $"Couldn't get info of user with id '{userId}'");
-            return null;
-        }
-
-        if (displayName) {
-            if (!string.IsNullOrEmpty(userInfo.DisplayName)) {
-                return userInfo.DisplayName;
+        try {
+            var userInfo = await GetUserInfoByUserId(userId, credentials.Oauth, credentials.ClientId);
+            if (userInfo == null) {
+                callback?.Invoke(null, $"Couldn't get info of user with id '{userId}'");
+                return null;
             }
-        }
-        
-        if (!string.IsNullOrEmpty(userInfo.Login)) {
-            return userInfo.Login;
-        }
 
-        callback?.Invoke(null, $"User with id {userId} not found");
+            if (displayName) {
+                if (!string.IsNullOrEmpty(userInfo.DisplayName)) {
+                    return userInfo.DisplayName;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(userInfo.Login)) {
+                return userInfo.Login;
+            }
+
+            callback?.Invoke(null, $"User with id {userId} not found");
+        } catch (Exception e) {
+            callback?.Invoke(null, $"Exception while getting a username: {e.Message}");
+        }
         return null;
     }
 }

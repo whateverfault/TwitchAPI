@@ -1,6 +1,7 @@
 ﻿using TwitchAPI.client.commands;
 using TwitchAPI.client.commands.data;
 using TwitchAPI.client.credentials;
+using TwitchAPI.client.data;
 using TwitchAPI.client.data.badges;
 using TwitchAPI.client.data.badges.data.badge;
 using TwitchAPI.event_sub;
@@ -12,14 +13,14 @@ namespace TwitchAPI.client;
 
 public enum LogLevel {
     Info,
-    Error,
     Warning,
+    Error,
 }
 
 internal struct QueuedMessage {
-    public string Message;
-    public string? ReplyId;
-    public bool IsWhisper;
+    public readonly string Message;
+    public readonly string? ReplyId;
+    public readonly bool IsWhisper;
     
     
     public QueuedMessage(string message, string? replyId = null, bool isWhisper = false) {
@@ -31,10 +32,15 @@ internal struct QueuedMessage {
 
 public class TwitchClient : ITwitchClient {
     private readonly CommandParser _commandParser;
-    private TwitchEventSubWebSocket? _websocket;
-
-    private readonly object _messageLock = new object();
+    private readonly TwitchClientConfig _config;
+    
+    private readonly object _lock = new object();
+    
+    private bool _connected;
+    private Task? _autoReconnectTask;
+    
     private readonly Queue<QueuedMessage> _messageQueue;
+    private TwitchEventSubWebSocket? _websocket;
 
     private Badge[]? _globalBadges;
     private Badge[]? _channelBadges;
@@ -48,8 +54,10 @@ public class TwitchClient : ITwitchClient {
     public event EventHandler<string>? OnError;
     
     
-    public TwitchClient(char? commandIdentifier = null) {
-        _commandParser = new CommandParser(commandIdentifier);
+    public TwitchClient(TwitchClientConfig? config = null) {
+        _config = config ?? new TwitchClientConfig();
+        
+        _commandParser = new CommandParser(_config.CommandIdentifier);
         _messageQueue = new Queue<QueuedMessage>();
         InitializeWebSocket();
     }
@@ -89,7 +97,15 @@ public class TwitchClient : ITwitchClient {
             
             _globalBadges = await Badges.ListGlobalBadges(Credentials, OnError);
             _channelBadges = await Badges.ListChannelBadges(Credentials, OnError);
-            
+
+            lock (_lock) {
+                _connected = true;
+            }
+
+            if (_config.AutoReconnectConfig.AutoReconnect) {
+                _autoReconnectTask?.Dispose();
+                _autoReconnectTask = AutoReconnect();
+            }
             return;
         
             async void SubscribeToChat(object? sender, EventArgs e) {
@@ -126,6 +142,11 @@ public class TwitchClient : ITwitchClient {
     }
     
     private async Task Disconnect(bool reconnect) {
+        lock (_lock) {
+            if (!_connected) return;
+            if (!reconnect) _connected = false;
+        }
+        
         if (_websocket?.SubscriptionId == null
          || Credentials == null) {
             return;
@@ -149,7 +170,7 @@ public class TwitchClient : ITwitchClient {
             return Task.CompletedTask;
         }
 
-        lock (_messageLock) {
+        lock (_lock) {
             _messageQueue.Enqueue(new QueuedMessage(message, replyId));
         }
         return Task.CompletedTask;
@@ -161,7 +182,7 @@ public class TwitchClient : ITwitchClient {
             return Task.CompletedTask;
         }
 
-        lock (_messageLock) {
+        lock (_lock) {
             _messageQueue.Enqueue(new QueuedMessage(message, userId, isWhisper: true));
         }
         return Task.CompletedTask;
@@ -202,6 +223,28 @@ public class TwitchClient : ITwitchClient {
         Credentials?.UpdateChannelId(response.UserId);
     }
 
+    private Task AutoReconnect() {
+        if (!_config.AutoReconnectConfig.AutoReconnect) {
+            return Task.CompletedTask;
+        }
+        
+        return Task.Run(async () => {
+                            while (true) {
+                                await Task.Delay(_config.AutoReconnectConfig.Cooldown);
+
+                                lock (_lock) {
+                                    if (!_config.AutoReconnectConfig.AutoReconnect) {
+                                        return;
+                                    }
+                                    
+                                    if (!_connected) continue;
+                                }
+
+                                await Reconnect();
+                            }
+                        });
+    }
+    
     private void InitializeWebSocket() {
         _websocket = new TwitchEventSubWebSocket();
         Subscribe();
@@ -282,7 +325,7 @@ public class TwitchClient : ITwitchClient {
                                 Thread.Sleep(TimeSpan.FromMilliseconds(100));
                                 
                                 QueuedMessage message;
-                                lock (_messageLock) {
+                                lock (_lock) {
                                     if (!_messageQueue.TryDequeue(out message)) {
                                         continue;
                                     } 

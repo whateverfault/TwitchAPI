@@ -16,10 +16,9 @@ public class CommandParser {
     
     public Command? Parse(ChatMessage chatMessage) {
         var commandIdentifier = ' ';
-
         var commandMessage = chatMessage.Text;
 
-        if (commandMessage.Length < 1) {
+        if (commandMessage.Length <= 0) {
             return null;
         }
 
@@ -39,14 +38,16 @@ public class CommandParser {
         }
 
         var commandText = GetCommandText(startIndex, commandMessage, out var end);
-
         if (string.IsNullOrEmpty(commandText)) {
             return null;
         }
 
+        commandText = commandText.Trim();
         commandMessage = GetCommandMessage(end, commandMessage).Trim();
-        var argumentsAsList = commandMessage.Split(" ", StringSplitOptions.TrimEntries).ToList();
-        argumentsAsList.RemoveAll(x => x.Equals(""));
+        
+        var argumentsAsList = commandMessage
+                             .Split(" ", StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                             .ToList();
         
         return new Command(
                            commandIdentifier, 
@@ -66,21 +67,24 @@ public class CommandParser {
     
     private static string GetCommandText(int start, string message, out int end) {
         var sb = new StringBuilder();
-        var index = start;
+        var i = start;
 
-        for (; index < message.Length; ++index) {
-            if (message[index] == ' ') {
+        for (; i < message.Length; ++i) {
+            if (start > 0
+             && char.IsWhiteSpace(message[i])) {
                 break;
             }
 
-            sb.Append(message[index]);
+            sb.Append(message[i]);
         }
 
-        end = index;
+        end = i;
         return sb.ToString();
     }
     
     private static string GetCommandMessage(int start, string message) {
+        if (start >= message.Length) return string.Empty;
+        
         var sb = new StringBuilder();
 
         for (var i = start; i < message.Length; ++i) {

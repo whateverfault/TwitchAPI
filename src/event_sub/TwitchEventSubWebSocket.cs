@@ -9,10 +9,11 @@ using TwitchAPI.event_sub.subscription_data.session.reconnect;
 namespace TwitchAPI.event_sub;
 
 public class TwitchEventSubWebSocket {
-    private const int ReconnectionDeadline = 25;
+    private const int RECONNECTION_DEADLINE = 25;
     
-    private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
     private readonly object _socketLock = new object();
+    
+    private CancellationTokenSource _cts = new CancellationTokenSource();
     
     private ClientWebSocket? _webSocket;
     private ClientWebSocket? _oldWebSocket;
@@ -23,14 +24,13 @@ public class TwitchEventSubWebSocket {
     
     public event EventHandler<ChatMessageEvent?>? OnChatMessageReceived;
     public event EventHandler<string>? OnConnectionClosed;
-    public event EventHandler? OnSessionStarted;
     public event EventHandler<string>? OnWebSocketError;
     
     public event EventHandler<ReconnectInfo>? OnReconnectRequired;
     
     public string? SessionId { get; private set; }
     public string? SubscriptionId { get; private set; }
-    
+
 
     public async Task ConnectAsync() {
         await ConnectInternalAsync("wss://eventsub.wss.twitch.tv/ws");
@@ -44,21 +44,89 @@ public class TwitchEventSubWebSocket {
                 _webSocket = socket;
             }
             
-            await _webSocket.ConnectAsync(new Uri(url), _cancellationTokenSource.Token);
-            _ = Task.Run(() => ReceiveMessagesAsync(socket), _cancellationTokenSource.Token);
+            await _webSocket.ConnectAsync(new Uri(url), _cts.Token);
+            await WaitForWelcomeMessage(_webSocket, _cts.Token);
+            
+            _ = ReceiveMessagesAsync(socket, _cts.Token);
         }
         catch (Exception ex) {
             OnWebSocketError?.Invoke(this, $"Connection failed: {ex.Message}");
         }
     }
 
-    private async Task ReceiveMessagesAsync(ClientWebSocket socket) {
+    
+    // TODO: refactor this big-ass ReceiveMessagesAsync method copy.
+    private async Task WaitForWelcomeMessage(ClientWebSocket socket, CancellationToken cancellationToken = default) {
         var buffer = new byte[4096];
         var messageBuffer = new List<byte>();
         
-        while (socket.State == WebSocketState.Open && !_cancellationTokenSource.IsCancellationRequested) {
+        while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested) {
             try {
-                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cancellationTokenSource.Token);
+                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+                
+                if (result.MessageType == WebSocketMessageType.Close) {
+                    if (result.CloseStatus == (WebSocketCloseStatus)4004) {
+                        OnWebSocketError?.Invoke(this, "Reconnect timeout: Failed to establish new connection within timeframe");
+                    }
+                    OnConnectionClosed?.Invoke(this, "WebSocket closed by server");
+                    break;
+                }
+
+                messageBuffer.AddRange(buffer[..result.Count]);
+                if (!result.EndOfMessage) continue;
+
+                var message = Encoding.UTF8.GetString(messageBuffer.ToArray());
+                messageBuffer.Clear();
+
+                var baseMessage =
+                    JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, SessionWelcomePayload>>(message);
+
+                if (baseMessage == null) {
+                    OnWebSocketError?.Invoke(this, "Couldn't deserialize the message.");
+                    return;
+                }
+
+                if (baseMessage.Metadata.MessageType.Equals("session_welcome")) {
+                    var welcomeMessage =
+                        JsonConvert
+                           .DeserializeObject<EventSubMessage<SessionMetadata, SessionWelcomePayload>>(message);
+
+                    if (welcomeMessage == null) {
+                        OnWebSocketError?.Invoke(this, "Couldn't deserialize the welcome message");
+                        return;
+                    }
+
+                    SessionId = welcomeMessage.Payload.Session.Id;
+                    
+                    if (_reconnecting
+                     && _webSocket == socket 
+                     && _oldWebSocket != null) {
+                        await CloseOldConnection();
+                    }
+
+                    return;
+                }
+            }
+            catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely) {
+                if (!_reconnecting) {
+                    OnConnectionClosed?.Invoke(this, $"WebSocket connection closed prematurely: {ex.Message}");
+                }
+                break;
+            }
+            catch (Exception ex) {
+                OnConnectionClosed?.Invoke(this, $"Error: {ex.Message}");
+                break;
+            }
+        }
+    }
+    
+    private async Task ReceiveMessagesAsync(ClientWebSocket socket, CancellationToken cancellationToken = default) {
+        var buffer = new byte[4096];
+        var messageBuffer = new List<byte>();
+        
+        while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested) {
+            try {
+                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
                 
                 if (result.MessageType == WebSocketMessageType.Close) {
                     if (result.CloseStatus == (WebSocketCloseStatus)4004) {
@@ -112,11 +180,11 @@ public class TwitchEventSubWebSocket {
 
                     SessionId = welcomeMessage.Payload.Session.Id;
                     
-                    if (_reconnecting && _webSocket == sourceSocket && _oldWebSocket != null) {
+                    if (_reconnecting
+                     && _webSocket == sourceSocket 
+                     && _oldWebSocket != null) {
                         await CloseOldConnection();
                     }
-                    
-                    OnSessionStarted?.Invoke(this, EventArgs.Empty);
                     break;
                 }
 
@@ -155,7 +223,9 @@ public class TwitchEventSubWebSocket {
         if (_oldWebSocket?.State == WebSocketState.Open) {
             await _oldWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client closing", CancellationToken.None);
         }
-        await _cancellationTokenSource.CancelAsync();
+        
+        await _cts.CancelAsync();
+        _cts = new CancellationTokenSource();
     }
 
     public void SetSubscriptionId(string id) {
@@ -171,24 +241,24 @@ public class TwitchEventSubWebSocket {
             }
 
             _pendingReconnectUrl = reconnectMessage.Payload.Session.ReconnectUrl;
-            _reconnectDeadline = DateTime.UtcNow.AddSeconds(ReconnectionDeadline);
+            _reconnectDeadline = DateTime.UtcNow.AddSeconds(RECONNECTION_DEADLINE);
 
             var reconnectInfo = new ReconnectInfo(_pendingReconnectUrl, _reconnectDeadline.Value);
             OnReconnectRequired?.Invoke(this, reconnectInfo);
             _reconnecting = true;
             
             var newWebSocket = new ClientWebSocket();
-            await newWebSocket.ConnectAsync(new Uri(_pendingReconnectUrl), _cancellationTokenSource.Token);
+            await newWebSocket.ConnectAsync(new Uri(_pendingReconnectUrl), _cts.Token);
 
             lock (_socketLock) {
                 _oldWebSocket = _webSocket;
                 _webSocket = newWebSocket;
             }
             
-            _ = Task.Run(() => ReceiveMessagesAsync(newWebSocket), _cancellationTokenSource.Token);
+            _ = Task.Run(() => ReceiveMessagesAsync(newWebSocket), _cts.Token);
             
             _ = Task.Run(async () => {
-                             await Task.Delay(TimeSpan.FromSeconds(ReconnectionDeadline), _cancellationTokenSource.Token);
+                             await Task.Delay(TimeSpan.FromSeconds(RECONNECTION_DEADLINE), _cts.Token);
                              if (_reconnecting && _reconnectDeadline <= DateTime.UtcNow) {
                                  OnWebSocketError?.Invoke(this, "Reconnect deadline passed, forcing old connection closed.");
                                  await CloseOldConnection();

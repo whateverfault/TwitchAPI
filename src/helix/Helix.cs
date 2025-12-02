@@ -16,6 +16,7 @@ public static class Helix {
     private static readonly HttpClient _httpClient = new HttpClient(HttpHandlerProvider.SharedHandler, disposeHandler: false);
     private static readonly HelixCache _cache = new HelixCache(5);
     
+    
     public static async Task<ValidateResponse?> ValidateOauth(string oauth, EventHandler<string>? callback = null) {
         try {
             if (string.IsNullOrEmpty(oauth)) {

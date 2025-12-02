@@ -2,11 +2,13 @@
 
 public class AutoReconnectConfig {
     public bool AutoReconnect;
+    public int Tries;
     public TimeSpan Cooldown;
 
 
-    public AutoReconnectConfig(bool autoReconnect = false, TimeSpan? cooldown = null) {
+    public AutoReconnectConfig(bool autoReconnect = false, int tries = 3, TimeSpan? cooldown = null) {
         AutoReconnect = autoReconnect;
-        Cooldown = cooldown ?? TimeSpan.FromMinutes(5);
+        Tries = tries;
+        Cooldown = cooldown ?? TimeSpan.FromSeconds(5);
     }
 }

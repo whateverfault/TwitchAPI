@@ -106,7 +106,7 @@ public class TwitchClient : ITwitchClient {
                                               channelInfo.Id
                                              );
     
-            _ = SendMessages(_sendMessagesTaskCts.Token);
+            _ = SendMessagesRoutine(_sendMessagesTaskCts.Token);
             
             await _websocket.ConnectAsync();
             await SubscribeToChat();
@@ -343,49 +343,55 @@ public class TwitchClient : ITwitchClient {
         }
     }
 
-    private Task SendMessages(CancellationToken cancellationToken = default) {
+    private Task SendMessagesRoutine(CancellationToken cancellationToken = default) {
         if (Credentials == null) return Task.CompletedTask;
         
         return Task.Run(async () => {
-                            while (true) {
-                                if (cancellationToken.IsCancellationRequested) {
-                                    return;
-                                }
+                            try {
+                                while (true) {
+                                    if (cancellationToken.IsCancellationRequested) {
+                                        return;
+                                    }
 
-                                await Task.Delay(_sendMessageDelay, cancellationToken);
-                                
-                                QueuedMessage message;
-                                lock (_lock) {
-                                    if (!_messageQueue.TryDequeue(out message)) {
-                                        continue;
-                                    } 
-                                }
-                                
-                                if (string.IsNullOrEmpty(message.ReplyId)) { 
-                                    await Helix.SendMessage(
-                                                            message.Message, 
-                                                            Credentials, 
-                                                            OnError
-                                                           ); 
-                                }
-                                else {
-                                    if (message.IsWhisper) {
-                                        await Helix.SendWhisper(
-                                                              message.ReplyId,
-                                                              message.Message,
-                                                              Credentials,
-                                                              OnError
-                                                             );
+                                    await Task.Delay(_sendMessageDelay, cancellationToken);
+
+                                    QueuedMessage message;
+                                    lock (_lock) {
+                                        if (!_messageQueue.TryDequeue(out message)) {
+                                            continue;
+                                        }
+                                    }
+
+                                    if (string.IsNullOrEmpty(message.ReplyId)) {
+                                        await Helix.SendMessage(
+                                                                message.Message,
+                                                                Credentials,
+                                                                OnError
+                                                               );
                                     }
                                     else {
-                                        await Helix.SendReply(
-                                                              message.Message,
-                                                              message.ReplyId,
-                                                              Credentials,
-                                                              OnError
-                                                             );
+                                        if (message.IsWhisper) {
+                                            await Helix.SendWhisper(
+                                                                    message.ReplyId,
+                                                                    message.Message,
+                                                                    Credentials,
+                                                                    OnError
+                                                                   );
+                                        }
+                                        else {
+                                            await Helix.SendReply(
+                                                                  message.Message,
+                                                                  message.ReplyId,
+                                                                  Credentials,
+                                                                  OnError
+                                                                 );
+                                        }
                                     }
-                                } 
+                                }
+                            }
+                            catch (TaskCanceledException) { }
+                            catch (Exception e) {
+                                OnError?.Invoke(this, $"Exception while sending chat messages. {e.Message}");
                             }
                         }, cancellationToken);
     }

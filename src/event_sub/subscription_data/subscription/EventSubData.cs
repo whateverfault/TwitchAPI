@@ -1,5 +1,5 @@
 ﻿using Newtonsoft.Json;
-using TwitchAPI.helix.data.requests.chat_subscription;
+using TwitchAPI.api.data.requests.chat_subscription;
 
 namespace TwitchAPI.event_sub.subscription_data.subscription;
 

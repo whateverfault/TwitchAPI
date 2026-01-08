@@ -1,6 +1,6 @@
 ﻿using System.Drawing;
 using System.Text;
-using TwitchAPI.client.data.badges.data.badge;
+using TwitchAPI.api.data.badges.data.badge;
 using TwitchAPI.event_sub.subscription_data.events.chat_message;
 
 namespace TwitchAPI.client.data;
@@ -71,12 +71,15 @@ public class ChatMessage {
         Badge[]? globalBadges = null,
         Badge[]? channelBadges = null) {
         var message = new StringBuilder();
-        
-        foreach (var fragment in e.Message.Fragments) {
-            if (fragment.Type == "mention") continue;
+
+        for (var i = 0; i < e.Message.Fragments.Length; i++) {
+            var fragment = e.Message.Fragments[i];
+            if (e.Reply != null && i == 0 && fragment.Type == "mention") {
+                continue;
+            }
 
             var processed = Sanitize(fragment.Text);
-            
+
             message.Append($"{processed} ");
         }
 
@@ -161,9 +164,7 @@ public class ChatMessage {
                          .Replace($"{(char)56320}", "")
                          .Replace($"{(char)847}", "")
                          .Trim()) {
-            if (!char.IsLowSurrogate(c)
-             && !char.IsHighSurrogate(c)
-             && !char.IsControl(c)) {
+            if (!char.IsControl(c)) {
                 sb.Append(c);
             }
         }

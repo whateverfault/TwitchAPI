@@ -7,15 +7,17 @@ using TwitchAPI.event_sub;
 using TwitchAPI.event_sub.subscription_data.events.chat_message;
 using TwitchAPI.api;
 using ChatMessage = TwitchAPI.client.data.ChatMessage;
+using System.Threading.Channels;
 
 namespace TwitchAPI.client;
 
 public enum LogLevel {
     Debug,
-    Info, 
+    Info,
     Warning,
     Error,
-} 
+}
+
 internal struct QueuedMessage {
     public readonly string Message;
     public readonly string? ReplyId;
@@ -25,7 +27,7 @@ internal struct QueuedMessage {
         Message = message;
         ReplyId = replyId;
         IsWhisper = isWhisper;
-    } 
+    }
 }
 
 public class TwitchClient : ITwitchClient {
@@ -39,6 +41,7 @@ public class TwitchClient : ITwitchClient {
     private bool _reconnecting;
 
     private CancellationTokenSource _sendMessagesTaskCts;
+    private Task? _sendMessagesTask;
 
     private TwitchEventSubWebSocket? _websocket;
 
@@ -46,63 +49,63 @@ public class TwitchClient : ITwitchClient {
     private Badge[]? _channelBadges;
 
     private event EventHandler<ChatMessage>? MessagePipeline;
-    
+
     private TwitchApi Api => _config.Api;
-    
+
     public FullCredentials? Credentials { get; private set; }
 
-    private readonly Queue<QueuedMessage> _messageQueue;
-    
+    private readonly Channel<QueuedMessage> _messageChannel;
+
     public event EventHandler<ChatMessage>? OnMessageReceived;
     public event EventHandler<Command>? OnCommandReceived;
     public event EventHandler? OnConnected;
     public event EventHandler<string>? OnDisconnected;
     public event EventHandler<string>? OnError;
-    
 
     public TwitchClient(TwitchClientConfig? config = null) {
         _config = config ?? new TwitchClientConfig();
         _commandParser = new CommandParser(_config.CommandIdentifier);
 
-        _messageQueue = [];
+        _messageChannel = Channel.CreateUnbounded<QueuedMessage>();
         _sendMessagesTaskCts = new CancellationTokenSource();
 
         InitializeWebSocket();
+        StartSendLoop();
+    }
+
+    private void StartSendLoop() {
+        _sendMessagesTask = Task.Run(() => SendMessagesRoutine(_sendMessagesTaskCts.Token), CancellationToken.None);
     }
 
     private async Task Initialize(FullCredentials credentials) {
         await Initialize(new ConnectionCredentials(credentials.Channel, credentials.Oauth, credentials.ChannelOauth));
     }
-    
+
     public async Task Initialize(ConnectionCredentials credentials) {
         lock (_lock) {
-            if (_initializing) {
+            if (_initializing)
                 return;
-            }
 
             _initializing = true;
         }
 
         try {
-            if (_websocket == null) {
+            if (_websocket == null)
                 return;
-            }
 
             var validate = await Api.ValidateOauth(credentials.Oauth, RaiseError);
-            if (validate == null) {
+            if (validate == null)
                 return;
-            }
 
             var channelInfo = await Api.GetUserInfoByUsername(
-                                                              credentials.Channel,
-                                                              credentials.Oauth,
-                                                              validate.ClientId,
-                                                              RaiseError
-                                                             );
+                credentials.Channel,
+                credentials.Oauth,
+                validate.ClientId,
+                RaiseError
+            );
 
-            if (channelInfo == null) {
+            if (channelInfo == null)
                 return;
-            }
 
             Credentials = new FullCredentials(
                 validate.Login,
@@ -113,8 +116,6 @@ public class TwitchClient : ITwitchClient {
                 validate.UserId,
                 channelInfo.Id
             );
-
-            _ = SendMessagesRoutine(_sendMessagesTaskCts.Token);
 
             var connected = await _websocket.ConnectAsync();
             if (!connected) {
@@ -133,76 +134,76 @@ public class TwitchClient : ITwitchClient {
             }
         }
     }
-    
+
     private void RaiseMessage(ChatMessage message) {
         var handler = OnMessageReceived;
-        if (handler != null) {
+        if (handler != null)
             handler(this, message);
-        }
     }
 
     private void RaiseCommand(Command command) {
         var handler = OnCommandReceived;
-        if (handler != null) {
+        if (handler != null)
             handler(this, command);
-        }
     }
 
     private void RaiseConnected() {
         var handler = OnConnected;
-        if (handler != null) {
+        if (handler != null)
             handler(this, EventArgs.Empty);
-        }
     }
 
     private void RaiseDisconnected(string message) {
         var handler = OnDisconnected;
-        if (handler != null) {
+        if (handler != null)
             handler(this, message);
-        }
     }
 
     private void RaiseError(object? sender, string message) {
         var handler = OnError;
-        if (handler != null) {
+        if (handler != null)
             handler(sender ?? this, message);
-        }
     }
-    
-    private void HandleChatMessage(object? sender, ChatMessageEvent? e) {
-        if (e == null || Credentials == null) {
-            return;
-        }
 
-        if (e.UserId == Credentials.UserId) {
+    private void HandleChatMessage(object? sender, ChatMessageEvent? e) {
+        if (e == null || Credentials == null)
             return;
-        }
+
+        if (e.UserId == Credentials.UserId)
+            return;
 
         var message = ChatMessage.Create(e, _globalBadges, _channelBadges);
 
         RaiseMessage(message);
 
         var pipeline = MessagePipeline;
-        if (pipeline != null) {
+        if (pipeline != null)
             pipeline(this, message);
-        }
     }
 
     private void HandleChatCommand(object? sender, ChatMessage message) {
         var command = _commandParser.Parse(message);
-        if (command != null) {
+        if (command != null)
             RaiseCommand(command);
-        }
     }
 
     private void InitializeWebSocket() {
+        if (_websocket != null) {
+            _websocket.OnChatMessageReceived -= HandleChatMessage;
+            _websocket.OnWebSocketError -= HandleWebSocketError;
+            _websocket.OnConnectionClosed -= HandleConnectionClosed;
+        }
+
         _websocket = new TwitchEventSubWebSocket();
 
         _websocket.OnChatMessageReceived += HandleChatMessage;
         _websocket.OnWebSocketError += HandleWebSocketError;
         _websocket.OnConnectionClosed += HandleConnectionClosed;
 
+        MessagePipeline -= HandleChatCommand;
         MessagePipeline += HandleChatCommand;
+
+        OnError -= HandleAutoReconnect;
         OnError += HandleAutoReconnect;
     }
 
@@ -215,9 +216,8 @@ public class TwitchClient : ITwitchClient {
     }
 
     private async Task SubscribeToChat() {
-        if (_websocket == null || Credentials == null) {
+        if (_websocket == null || Credentials == null)
             return;
-        }
 
         var payload = await EventSub.SubscribeToChannelChat(
             _websocket.SessionId,
@@ -232,15 +232,13 @@ public class TwitchClient : ITwitchClient {
         _websocket.SetSubscriptionId(payload.Id);
         RaiseConnected();
     }
-    
-    private void HandleAutoReconnect(object? sender, string message) {
-        if (!_config.AutoReconnectConfig.AutoReconnect) {
-            return;
-        }
 
-        if (message.Contains("Reconnect", StringComparison.OrdinalIgnoreCase)) {
+    private void HandleAutoReconnect(object? sender, string message) {
+        if (!_config.AutoReconnectConfig.AutoReconnect)
             return;
-        }
+
+        if (message.Contains("Reconnect", StringComparison.OrdinalIgnoreCase))
+            return;
 
         _ = Reconnect();
     }
@@ -281,12 +279,8 @@ public class TwitchClient : ITwitchClient {
             );
         }
 
-        if (_websocket != null) {
+        if (_websocket != null)
             await _websocket.DisconnectAsync();
-        }
-
-        await _sendMessagesTaskCts.CancelAsync();
-        _sendMessagesTaskCts = new CancellationTokenSource();
 
         if (!reconnect)
             RaiseDisconnected("Disconnected.");
@@ -298,9 +292,7 @@ public class TwitchClient : ITwitchClient {
             return Task.CompletedTask;
         }
 
-        lock (_lock) {
-            _messageQueue.Enqueue(new QueuedMessage(message, replyId));
-        } 
+        _messageChannel.Writer.TryWrite(new QueuedMessage(message, replyId));
         return Task.CompletedTask;
     }
 
@@ -310,9 +302,7 @@ public class TwitchClient : ITwitchClient {
             return Task.CompletedTask;
         }
 
-        lock (_lock) {
-            _messageQueue.Enqueue(new QueuedMessage(message, userId, isWhisper: true));
-        } 
+        _messageChannel.Writer.TryWrite(new QueuedMessage(message, userId, isWhisper: true));
         return Task.CompletedTask;
     }
 
@@ -323,84 +313,83 @@ public class TwitchClient : ITwitchClient {
     public async Task UpdateChannel(string username) {
         if (Credentials == null) return;
         var userId = await ValidateUser(username, OnError);
-        if (userId == null) {
+        if (userId == null)
             return;
-        }
-        
-        Credentials.UpdateChannel(username); 
-        Credentials.UpdateChannelId(userId); 
+
+        Credentials.UpdateChannel(username);
+        Credentials.UpdateChannelId(userId);
         _channelBadges = await Api.ListChannelBadges(Credentials, OnError);
     }
 
     public async Task UpdateOauth(string oauth) {
         var response = await Api.ValidateOauth(oauth, OnError);
-        if (response == null) {
+        if (response == null)
             return;
-        }
-        
+
         Credentials?.UpdateOauth(oauth);
         Credentials?.UpdateUsername(response.Login);
         Credentials?.UpdateUserId(response.UserId);
         Credentials?.UpdateClientId(response.ClientId);
     }
-    
-    public async Task UpdateChannelOauth(string oauth) { 
+
+    public async Task UpdateChannelOauth(string oauth) {
         var response = await Api.ValidateOauth(oauth, OnError);
-        if (response == null) {
+        if (response == null)
             return;
-        } 
-        
+
         Credentials?.UpdateChannelOauth(oauth);
-        Credentials?.UpdateChannel(response.Login); 
-        Credentials?.UpdateChannelId(response.UserId); 
+        Credentials?.UpdateChannel(response.Login);
+        Credentials?.UpdateChannelId(response.UserId);
     }
-    
+
     private async Task SendMessagesRoutine(CancellationToken token) {
+        var reader = _messageChannel.Reader;
+
         while (!token.IsCancellationRequested) {
             QueuedMessage message;
-            bool hasMessage;
 
-            lock (_lock) {
-                hasMessage = _messageQueue.TryDequeue(out message);
+            try {
+                message = await reader.ReadAsync(token);
+            }
+            catch {
+                break;
             }
 
-            if (!hasMessage || Credentials == null) {
-                await Task.Delay(_sendMessageDelay, token);
+            if (Credentials == null)
                 continue;
-            }
 
-            try
-            {
-                if (message.IsWhisper)
-                {
+            try {
+                if (message.IsWhisper) {
                     await Api.SendWhisper(
-                                          message.ReplyId!,
-                                          message.Message,
-                                          Credentials,
-                                          RaiseError
-                                         );
+                        message.ReplyId!,
+                        message.Message,
+                        Credentials,
+                        RaiseError
+                    );
                 }
-                else if (message.ReplyId != null)
-                {
+                else if (message.ReplyId != null) {
                     await Api.SendReply(
-                                        message.Message,
-                                        message.ReplyId,
-                                        Credentials,
-                                        RaiseError
-                                       );
+                        message.Message,
+                        message.ReplyId,
+                        Credentials,
+                        RaiseError
+                    );
                 }
-                else
-                {
+                else {
                     await Api.SendMessage(
-                                          message.Message,
-                                          Credentials,
-                                          RaiseError
-                                         );
+                        message.Message,
+                        Credentials,
+                        RaiseError
+                    );
                 }
             }
-            catch
-            {
+            catch { }
+
+            try {
                 await Task.Delay(_sendMessageDelay, token);
+            }
+            catch {
+                break;
             }
         }
     }
@@ -409,13 +398,12 @@ public class TwitchClient : ITwitchClient {
         if (Credentials == null) {
             callback?.Invoke(this, "Cannot update a username before initializing a client.");
             return null;
-        } 
-        
+        }
+
         var userId = await Api.GetUserId(username, Credentials);
-        if (userId == null) {
+        if (userId == null)
             callback?.Invoke(this, "User doesn't exist.");
-        } 
-        
+
         return userId;
     }
 }

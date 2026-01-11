@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace TwitchAPI.event_sub.subscription_data.session;
+namespace TwitchAPI.event_sub.data.subscription_data.session;
 
 public class SessionMetadata {
     [JsonProperty("message_id")]

@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace TwitchAPI.event_sub.subscription_data.subscription;
+namespace TwitchAPI.event_sub.data.subscription_data.subscription;
 
 public class SubscriptionData {
     [JsonProperty("id")]

@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace TwitchAPI.event_sub.subscription_data.events;
+namespace TwitchAPI.event_sub.data.subscription_data.events;
 
 public class EventSubMessage<TMetadata, TPayload>  {
     [JsonProperty("metadata")]

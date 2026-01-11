@@ -1,4 +1,4 @@
-﻿namespace TwitchAPI.event_sub.subscription_data.session.reconnect;
+﻿namespace TwitchAPI.event_sub.data.subscription_data.session.reconnect;
 
 public class ReconnectInfo {
     public string NewWebSocketUrl { get; set; }

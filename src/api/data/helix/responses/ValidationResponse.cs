@@ -2,7 +2,7 @@
 
 namespace TwitchAPI.api.data.responses;
 
-public class ValidateResponse {
+public class ValidationResponse {
     [JsonProperty("client_id")]
     public string ClientId { get; private set; }
     
@@ -19,7 +19,7 @@ public class ValidateResponse {
     public long ExpiresIn { get; private set; }
     
     
-    public ValidateResponse(
+    public ValidationResponse(
         [JsonProperty("client_id")] string clientId,
         [JsonProperty("login")] string login,
         [JsonProperty("scopes")] string[] scopes,

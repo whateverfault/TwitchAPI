@@ -1,10 +1,13 @@
 ﻿using System.Net.WebSockets;
 using System.Text;
 using Newtonsoft.Json;
-using TwitchAPI.event_sub.subscription_data.events;
-using TwitchAPI.event_sub.subscription_data.events.chat_message;
-using TwitchAPI.event_sub.subscription_data.session;
-using TwitchAPI.event_sub.subscription_data.session.reconnect;
+using TwitchAPI.client.credentials;
+using TwitchAPI.event_sub.data;
+using TwitchAPI.event_sub.data.subscription_data.events;
+using TwitchAPI.event_sub.data.subscription_data.events.channel_points;
+using TwitchAPI.event_sub.data.subscription_data.events.chat_message;
+using TwitchAPI.event_sub.data.subscription_data.session;
+using TwitchAPI.event_sub.data.subscription_data.session.reconnect;
 
 namespace TwitchAPI.event_sub;
 
@@ -23,28 +26,99 @@ public sealed class TwitchEventSubWebSocket {
     private Task? _reconnectReceiveTask;
     private DateTime _reconnectDeadline;
 
+    private readonly bool _broadcaster;
+    
     private bool _reconnecting;
-
     private TaskCompletionSource<bool>? _initialWelcomeTcs;
+    private FullCredentials? _credentials;
 
+    private readonly List<EventSubSubscription> _subscriptions = new List<EventSubSubscription>();
+
+    public string? SessionId { get; private set; }
+    
     public event EventHandler<ChatMessageEvent?>? OnChatMessageReceived;
+    public event EventHandler<ChannelPointsRedemptionEvent?>? OnRewardRedeemed;
+    
+    public event EventHandler? OnConnected;
     public event EventHandler<string>? OnConnectionClosed;
     public event EventHandler<string>? OnWebSocketError;
     public event EventHandler<ReconnectInfo>? OnReconnectRequired;
 
-    public string? SessionId { get; private set; }
-    public string? SubscriptionId { get; private set; }
+    
+    public TwitchEventSubWebSocket(
+        HttpClient? httpClient = null, 
+        bool broadcaster = false) {
+        var eventSub = new EventSub(httpClient);
+        _broadcaster = broadcaster;
+        
+        RegisterCoreSubscriptions(eventSub);
+    }
 
+    public void SetCredentials(FullCredentials creds) {
+        _credentials = creds;
+    }
+
+    public void RaiseChatMessage(ChatMessageEvent e) {
+        OnChatMessageReceived?.Invoke(this, e);
+    }
+    
+    public void RaiseRewardRedeemed(ChannelPointsRedemptionEvent e) {
+        OnRewardRedeemed?.Invoke(this, e);
+    }
+    
     public async Task<bool> ConnectAsync() {
         try {
-            _initialWelcomeTcs =
-                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
+            _initialWelcomeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             await ConnectActiveAsync("wss://eventsub.wss.twitch.tv/ws");
             return await _initialWelcomeTcs.Task;
         }
         catch {
             return false;
+        }
+    }
+
+    public async Task DisconnectAsync() {
+        SessionId = null;
+        
+        ClientWebSocket? socket;
+        CancellationTokenSource? cts;
+        Task? receiveTask;
+
+        lock (_sync) {
+            socket = _activeSocket;
+            cts = _activeCts;
+            receiveTask = _activeReceiveTask;
+            _activeSocket = null;
+            _activeCts = null;
+            _activeReceiveTask = null;
+        }
+
+        cts?.Cancel();
+
+        if (socket != null)
+            await CloseSocketAsync(socket, "Client disconnect");
+
+        if (receiveTask != null) {
+            try {
+                await receiveTask;
+            }
+            catch (Exception ex) {
+                OnWebSocketError?.Invoke(this, ex.Message);
+            }
+        }
+
+        try {
+            socket?.Dispose();
+        }
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
+
+        try {
+            cts?.Dispose();
+        }
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
         }
     }
 
@@ -74,11 +148,14 @@ public sealed class TwitchEventSubWebSocket {
 
         try {
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open) {
-                var receiveTask = socket.ReceiveAsync(buffer, token);
+                using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var receiveTask = socket.ReceiveAsync(buffer, receiveCts.Token);
                 var timeoutTask = Task.Delay(_receiveTimeout, CancellationToken.None);
 
                 var completed = await Task.WhenAny(receiveTask, timeoutTask);
                 if (completed == timeoutTask) {
+                    receiveCts.Cancel();
+                    
                     if (DateTime.UtcNow - lastReceiveUtc >= _receiveTimeout) {
                         await CloseSocketAsync(socket, "Receive timeout");
                         break;
@@ -117,9 +194,7 @@ public sealed class TwitchEventSubWebSocket {
             bool shouldDispose;
 
             lock (_sync) {
-                shouldDispose =
-                    socket != _activeSocket &&
-                    socket != _reconnectSocket;
+                shouldDispose = socket != _activeSocket && socket != _reconnectSocket;
             }
 
             if (shouldDispose)
@@ -129,77 +204,108 @@ public sealed class TwitchEventSubWebSocket {
 
     private async Task HandleMessageAsync(string message, ClientWebSocket source, bool canBecomeActive) {
         EventSubMessage<SessionMetadata, object>? baseMessage;
+
         try {
             baseMessage = JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, object>>(message);
         }
-        catch {
-            return;
-        }
+        catch { return; }
 
         if (baseMessage == null)
             return;
 
         switch (baseMessage.Metadata.MessageType) {
-            case "session_welcome": {
-                EventSubMessage<SessionMetadata, SessionWelcomePayload>? welcome;
-                try {
-                    welcome =
-                        JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, SessionWelcomePayload>>(message);
-                }
-                catch {
-                    return;
-                }
-
-                if (welcome == null)
-                    return;
-
-                SessionId = welcome.Payload.Session.Id;
-                _initialWelcomeTcs?.TrySetResult(true);
-
-                if (canBecomeActive)
-                    await PromoteReconnectSocketAsync(source);
-
+            case "session_welcome":
+                await HandleWelcomeAsync(message, source, canBecomeActive);
                 break;
-            }
 
             case "session_keepalive":
                 break;
 
-            case "session_reconnect": {
-                EventSubMessage<SessionMetadata, SessionReconnectPayload>? reconnect;
-                try {
-                    reconnect =
-                        JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, SessionReconnectPayload>>(message);
-                }
-                catch {
-                    return;
-                }
+            case "session_reconnect":
+                await HandleReconnectAsync(message);
+                break;
 
-                if (reconnect == null)
-                    return;
+            case "notification":
+                DispatchNotification(baseMessage.Metadata.SubscriptionType, message);
+                break;
+        }
+    }
 
-                var url = reconnect.Payload.Session.ReconnectUrl;
-                var deadline = DateTime.UtcNow.Add(_reconnectWindow);
+    private async Task HandleWelcomeAsync(string message, ClientWebSocket source, bool canBecomeActive) {
+        EventSubMessage<SessionMetadata, SessionWelcomePayload>? welcome;
 
-                OnReconnectRequired?.Invoke(this, new ReconnectInfo(url, deadline));
-                await BeginReconnectAsync(url, deadline);
+        try {
+            welcome = JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, SessionWelcomePayload>>(message);
+        }
+        catch { return; }
+
+        if (welcome == null)
+            return;
+
+        SessionId = welcome.Payload.Session.Id;
+        _initialWelcomeTcs?.TrySetResult(true);
+
+        if (_credentials != null)
+            _ = SubscribeAllInternal();
+
+        if (canBecomeActive)
+            await PromoteReconnectSocketAsync(source);
+    }
+
+    private async Task HandleReconnectAsync(string message) {
+        EventSubMessage<SessionMetadata, SessionReconnectPayload>? reconnect;
+
+        try {
+            reconnect = JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, SessionReconnectPayload>>(message);
+        }
+        catch { return; }
+
+        if (reconnect == null)
+            return;
+
+        var url = reconnect.Payload.Session.ReconnectUrl;
+        var deadline = DateTime.UtcNow.Add(_reconnectWindow);
+
+        OnReconnectRequired?.Invoke(this, new ReconnectInfo(url, deadline));
+        await BeginReconnectAsync(url, deadline);
+    }
+
+    private void DispatchNotification(string? subscriptionType, string rawJson) {
+        if (subscriptionType == null)
+            return;
+
+        var sub = _subscriptions.FirstOrDefault(s => s.Type == subscriptionType);
+        sub?.Dispatch(rawJson);
+    }
+
+    private void RegisterCoreSubscriptions(EventSub eventSub) {
+        switch (_broadcaster) {
+            case true: {
+                _subscriptions.Add(EventSubSubscription.CreateRedemptions(this, eventSub));
                 break;
             }
 
-            case "notification" when baseMessage.Metadata.SubscriptionType == "channel.chat.message": {
-                EventSubMessage<SessionMetadata, EventSubMessagePayload<ChatMessageEvent>>? chat;
-                try {
-                    chat =
-                        JsonConvert.DeserializeObject<EventSubMessage<SessionMetadata, EventSubMessagePayload<ChatMessageEvent>>>(message);
-                }
-                catch {
-                    return;
-                }
-
-                OnChatMessageReceived?.Invoke(this, chat?.Payload.Event);
+            case false: {
+                _subscriptions.Add(EventSubSubscription.CreateChat(this, eventSub));
                 break;
             }
         }
+    }
+
+    private async Task SubscribeAllInternal() {
+        if (_credentials == null || SessionId == null)
+            return;
+
+        foreach (var sub in _subscriptions) {
+            try {
+                await sub.SubscribeAsync(SessionId, _credentials, OnWebSocketError);
+            }
+            catch (Exception ex) {
+                OnWebSocketError?.Invoke(this, ex.Message);
+            }
+        }
+
+        OnConnected?.Invoke(this, EventArgs.Empty);
     }
 
     private async Task BeginReconnectAsync(string url, DateTime deadline) {
@@ -225,11 +331,10 @@ public sealed class TwitchEventSubWebSocket {
             _reconnectReceiveTask = Task.Run(() => ReceiveLoopAsync(socket, cts.Token, true), CancellationToken.None);
 
             _ = Task.Run(async () => {
-                await Task.Delay(_reconnectWindow, CancellationToken.None);
-                if (DateTime.UtcNow >= _reconnectDeadline) {
-                    await AbortReconnectAsync(); 
-                } 
-            }, CancellationToken.None);
+                await Task.Delay(_reconnectWindow, CancellationToken.None); 
+                if (DateTime.UtcNow >= _reconnectDeadline)
+                    await AbortReconnectAsync();
+                         }, CancellationToken.None);
         }
         catch (Exception ex) {
             Cleanup(socket, cts);
@@ -258,18 +363,32 @@ public sealed class TwitchEventSubWebSocket {
 
         if (oldSocket != null) {
             try {
-                await oldSocket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    "Reconnected",
-                    CancellationToken.None);
+                await oldSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconnected", CancellationToken.None);
             }
             catch {
-                try { oldSocket.Abort(); } catch { }
+                try {
+                    oldSocket.Abort();
+                }
+                catch (Exception ex) {
+                    OnWebSocketError?.Invoke(this, ex.Message);
+                }
             }
             finally {
                 oldCts?.Cancel();
-                oldSocket.Dispose();
-                oldCts?.Dispose();
+                
+                try {
+                    oldSocket.Dispose();
+                } 
+                catch (Exception ex) {
+                    OnWebSocketError?.Invoke(this, ex.Message);
+                }
+
+                try {
+                    oldCts?.Dispose();
+                } 
+                catch (Exception ex) {
+                    OnWebSocketError?.Invoke(this, ex.Message);
+                }
             }
         }
     }
@@ -286,71 +405,73 @@ public sealed class TwitchEventSubWebSocket {
             _reconnecting = false;
         }
 
-        if (socket != null) {
-            try { socket.Abort(); } catch { }
-            socket.Dispose();
+        try {
+            socket?.Abort();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
         }
 
-        if (cts != null) {
-            cts.Cancel();
-            cts.Dispose();
+        try {
+            socket?.Dispose();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
+
+        try {
+            cts?.Cancel();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
+
+        try {
+            cts?.Dispose();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
         }
 
         await Task.CompletedTask;
     }
 
-    public async Task DisconnectAsync() {
-        ClientWebSocket? socket;
-        CancellationTokenSource? cts;
-        Task? receiveTask;
-
-        lock (_sync) {
-            socket = _activeSocket;
-            cts = _activeCts;
-            receiveTask = _activeReceiveTask;
-            _activeSocket = null;
-            _activeCts = null;
-            _activeReceiveTask = null;
-        }
-
-        if (cts != null)
-            cts.Cancel();
-
-        if (socket != null)
-            await CloseSocketAsync(socket, "Client disconnect");
-
-        if (receiveTask != null) {
-            try { await receiveTask; } catch { }
-        }
-
-        if (socket != null)
-            socket.Dispose();
-
-        if (cts != null)
-            cts.Dispose();
-    }
-
-    private static async Task CloseSocketAsync(ClientWebSocket socket, string reason) {
+    private async Task CloseSocketAsync(ClientWebSocket socket, string reason) {
         if (socket.State == WebSocketState.Open) {
             try {
-                await socket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    reason,
-                    CancellationToken.None);
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, reason, CancellationToken.None);
             }
             catch {
-                try { socket.Abort(); } catch { }
+                try {
+                    socket.Abort();
+                } 
+                catch (Exception ex) {
+                    OnWebSocketError?.Invoke(this, ex.Message);
+                }
             }
         }
     }
 
-    private static void Cleanup(ClientWebSocket socket, CancellationTokenSource? cts) {
-        try { cts?.Cancel(); } catch { }
-        try { socket.Dispose(); } catch { }
-        try { cts?.Dispose(); } catch { }
-    }
+    private void Cleanup(ClientWebSocket socket, CancellationTokenSource? cts) {
+        try {
+            cts?.Cancel();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
 
-    public void SetSubscriptionId(string id) {
-        SubscriptionId = id;
+        try {
+            socket.Dispose();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
+
+        try {
+            cts?.Dispose();
+        } 
+        catch (Exception ex) {
+            OnWebSocketError?.Invoke(this, ex.Message);
+        }
     }
 }

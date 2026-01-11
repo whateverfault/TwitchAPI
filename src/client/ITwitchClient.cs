@@ -7,13 +7,18 @@ namespace TwitchAPI.client;
 public interface ITwitchClient {
     public FullCredentials? Credentials { get; }
 
+    public event EventHandler<RewardRedemption>? OnRewardRedeemed;
     public event EventHandler<ChatMessage>? OnMessageReceived;
     public event EventHandler<Command>? OnCommandReceived;
+    
     public event EventHandler? OnConnected;
     public event EventHandler<string>? OnDisconnected;
     public event EventHandler<string>? OnError;
 
-    
+
+    public Task<FullCredentials?> GetFullCredentials(ConnectionCredentials credentials);
+
+    public Task Initialize(FullCredentials credentials);
     public Task Initialize(ConnectionCredentials credentials);
 
     public Task Reconnect();
@@ -25,9 +30,9 @@ public interface ITwitchClient {
 
     public bool SetCommandIdentifier(char identifier);
 
-    public Task UpdateChannel(string username);
+    public Task UpdateBroadcaster(string username);
 
     public Task UpdateOauth(string oauth);
 
-    public Task UpdateChannelOauth(string oauth);
+    public Task UpdateBroadcasterOauth(string oauth);
 }

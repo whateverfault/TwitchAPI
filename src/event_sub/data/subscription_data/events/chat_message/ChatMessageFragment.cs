@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace TwitchAPI.event_sub.subscription_data.events.chat_message;
+namespace TwitchAPI.event_sub.data.subscription_data.events.chat_message;
 
 public class ChatMessageFragment {
     [JsonProperty("type")]

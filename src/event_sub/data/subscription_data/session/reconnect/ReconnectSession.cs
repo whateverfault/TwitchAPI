@@ -1,6 +1,6 @@
 ﻿using Newtonsoft.Json;
 
-namespace TwitchAPI.event_sub.subscription_data.session.reconnect;
+namespace TwitchAPI.event_sub.data.subscription_data.session.reconnect;
 
 public class ReconnectSession {
     [JsonProperty("id")]

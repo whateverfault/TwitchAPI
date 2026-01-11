@@ -4,7 +4,7 @@ namespace TwitchAPI.api.data.responses.GetUserInfo;
 
 public class UserInfo {
     [JsonProperty("id")]
-    public string Id { get; private set; }
+    public string UserId { get; private set; }
     
     [JsonProperty("login")]
     public string Login { get; private set; }
@@ -23,13 +23,13 @@ public class UserInfo {
     
     
     public UserInfo(
-        [JsonProperty("id")] string id,
+        [JsonProperty("id")] string userId,
         [JsonProperty("login")] string login,
         [JsonProperty("display_name")] string displayName,
         [JsonProperty("type")] string type,
         [JsonProperty("broadcaster_type")] string broadcasterType,
         [JsonProperty("description")] string description) {
-        Id = id;
+        UserId = userId;
         Login = login;
         DisplayName = displayName;
         Type = type;

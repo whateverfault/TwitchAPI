@@ -1,7 +1,7 @@
 ﻿using System.Drawing;
 using System.Text;
 using TwitchAPI.api.data.badges.data.badge;
-using TwitchAPI.event_sub.subscription_data.events.chat_message;
+using TwitchAPI.event_sub.data.subscription_data.events.chat_message;
 
 namespace TwitchAPI.client.data;
 
@@ -12,7 +12,7 @@ public class ChatMessage {
 
     public string UserId { get; }
 
-    public string Username { get; }
+    public string UserName { get; }
 
     public string Id { get; }
 
@@ -39,7 +39,7 @@ public class ChatMessage {
         string channelId,
         string channel,
         string userId,
-        string username,
+        string userName,
         string id,
         string text,
         Color color,
@@ -53,7 +53,7 @@ public class ChatMessage {
         ChannelId = channelId;
         Channel = channel;
         UserId = userId;
-        Username = username;
+        UserName = userName;
         Id = id;
         Text = text;
         Color = color;

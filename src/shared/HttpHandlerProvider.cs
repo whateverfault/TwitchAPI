@@ -11,5 +11,7 @@ public static class HttpHandlerProvider {
                                                                   EnableMultipleHttp2Connections = false,
                                                                   UseCookies = false,
                                                                   AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                                                                  UseProxy = true,
+                                                                  Proxy = WebRequest.DefaultWebProxy,
                                                               };
 }

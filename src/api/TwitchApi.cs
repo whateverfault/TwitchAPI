@@ -73,7 +73,10 @@ public class TwitchApi {
             }
 
             var deserialized = JsonConvert.DeserializeObject<GetUserInfoResponse>(responseContent);
-            if (deserialized?.Data is not { Length: > 0, }) return null;
+            if (deserialized?.Data is not { Length: > 0, }) {
+                callback?.Invoke(null, "Failed to get user info: User doesn't exist.");
+                return null;
+            }
 
             var userInfo = deserialized.Data[0];
             _cache.UserInfoTable.Add(endpoint, userInfo);
@@ -610,6 +613,37 @@ public class TwitchApi {
         }
     }
 
+    public async Task<UserInfo?> GetUserInfoByUserName(string username, FullCredentials credentials, EventHandler<string>? callback = null) {
+        try {
+            if (string.IsNullOrEmpty(username)) {
+                callback?.Invoke(null, "Username is empty.");
+                return null;
+            }
+            
+            var response = await GetUserInfo($"https://api.twitch.tv/helix/users?login={username}", credentials.Bot.Oauth, credentials.Bot.ClientId, callback);
+            return response;
+        }
+        catch (Exception e) {
+            callback?.Invoke(null, $"Exception while getting user info. {e.Message}");
+            return null;
+        }
+    }
+    
+    public async Task<UserInfo?> GetUserInfoByUserId(string userId, FullCredentials credentials, EventHandler<string>? callback = null) {
+        try {
+            if (string.IsNullOrEmpty(userId)) {
+                callback?.Invoke(null, "UserId is empty.");
+                return null;
+            }
+            var response = await GetUserInfo($"https://api.twitch.tv/helix/users?id={userId}", credentials.Bot.Oauth, credentials.Bot.ClientId, callback);
+            return response;
+        }
+        catch (Exception e) {
+            callback?.Invoke(null, $"Exception while getting user info. {e.Message}");
+            return null;
+        }
+    }
+    
     public async Task<UserInfo?> GetUserInfoByUserId(string userId, string oauth, string clientId, EventHandler<string>? callback = null) {
         try {
             if (string.IsNullOrEmpty(userId)) {

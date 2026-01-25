@@ -36,4 +36,12 @@ public class UserInfo {
         BroadcasterType = broadcasterType;
         Description = description;
     }
+
+    public string GetDisplayName() {
+        return DisplayName;
+    }
+
+    public void SetDisplayName(string value) {
+        DisplayName = value;
+    }
 }

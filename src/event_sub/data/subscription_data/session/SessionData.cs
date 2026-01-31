@@ -10,7 +10,7 @@ public class SessionData {
     public string Status { get; set; }
 
     [JsonProperty("keepalive_timeout_seconds")]
-    public int? KeepaliveTimeoutSeconds { get; set; }
+    public int KeepaliveTimeoutSeconds { get; set; }
     
     
     [JsonConstructor]
@@ -20,6 +20,6 @@ public class SessionData {
         [JsonProperty("keepalive_timeout_seconds")] int? timeout = null) {
         Id = id;
         Status = status;
-        KeepaliveTimeoutSeconds = timeout;
+        KeepaliveTimeoutSeconds = timeout ?? 300;
     }
 }

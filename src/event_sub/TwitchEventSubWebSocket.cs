@@ -19,11 +19,11 @@ public sealed class TwitchEventSubWebSocket {
 
     private ClientWebSocket? _activeSocket;
     private CancellationTokenSource? _activeCts;
+    private Task? _reconnectTask;
     private Task? _activeReceiveTask;
 
     private ClientWebSocket? _reconnectSocket;
     private CancellationTokenSource? _reconnectCts;
-    private Task? _reconnectReceiveTask;
     private DateTime _reconnectDeadline;
 
     private readonly bool _broadcaster;
@@ -32,9 +32,15 @@ public sealed class TwitchEventSubWebSocket {
     private TaskCompletionSource<bool>? _initialWelcomeTcs;
     private FullCredentials? _credentials;
 
-    private readonly List<EventSubSubscription> _subscriptions = new List<EventSubSubscription>();
+    private readonly List<EventSubSubscription> _subscriptions = [];
 
-    public string? SessionId { get; private set; }
+    private Task? _keepAliveTask;
+    private CancellationTokenSource? _keepAliveCts;
+    
+    private DateTime _lastKeepAliveUtc = DateTime.UtcNow;
+    private TimeSpan _keepAliveTimeout = TimeSpan.FromSeconds(30);
+    
+    private string? SessionId { get; set; }
     
     public event EventHandler<ChatMessageEvent?>? OnChatMessageReceived;
     public event EventHandler<ChannelPointsRedemptionEvent?>? OnRewardRedeemed;
@@ -146,6 +152,8 @@ public sealed class TwitchEventSubWebSocket {
         var messageBuffer = new List<byte>();
         var lastReceiveUtc = DateTime.UtcNow;
 
+        _ = Task.Run(StartKeepAliveWatchdog, CancellationToken.None);
+        
         try {
             while (!token.IsCancellationRequested && socket.State == WebSocketState.Open) {
                 using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -219,6 +227,7 @@ public sealed class TwitchEventSubWebSocket {
                 break;
 
             case "session_keepalive":
+                HandleKeepAlive();
                 break;
 
             case "session_reconnect":
@@ -231,6 +240,12 @@ public sealed class TwitchEventSubWebSocket {
         }
     }
 
+    private void HandleKeepAlive(int? timeoutSeconds = null) {
+        if (timeoutSeconds != null)
+            _keepAliveTimeout = TimeSpan.FromSeconds(timeoutSeconds.Value);
+        _lastKeepAliveUtc = DateTime.UtcNow;
+    }
+    
     private async Task HandleWelcomeAsync(string message, ClientWebSocket source, bool canBecomeActive) {
         EventSubMessage<SessionMetadata, SessionWelcomePayload>? welcome;
 
@@ -241,10 +256,12 @@ public sealed class TwitchEventSubWebSocket {
 
         if (welcome == null)
             return;
-
+        
         SessionId = welcome.Payload.Session.Id;
         _initialWelcomeTcs?.TrySetResult(true);
 
+        HandleKeepAlive(welcome.Payload.Session.KeepaliveTimeoutSeconds);
+        
         if (_credentials != null)
             _ = SubscribeAllInternal();
 
@@ -328,7 +345,7 @@ public sealed class TwitchEventSubWebSocket {
                 _reconnectCts = cts;
             }
 
-            _reconnectReceiveTask = Task.Run(() => ReceiveLoopAsync(socket, cts.Token, true), CancellationToken.None);
+            _reconnectTask = Task.Run(() => ReceiveLoopAsync(socket, cts.Token, true), CancellationToken.None);
 
             _ = Task.Run(async () => {
                 await Task.Delay(_reconnectWindow, CancellationToken.None); 
@@ -421,6 +438,8 @@ public sealed class TwitchEventSubWebSocket {
 
         try {
             cts?.Cancel();
+            if (_reconnectTask != null)
+                await _reconnectTask;
         } 
         catch (Exception ex) {
             OnWebSocketError?.Invoke(this, ex.Message);
@@ -432,8 +451,6 @@ public sealed class TwitchEventSubWebSocket {
         catch (Exception ex) {
             OnWebSocketError?.Invoke(this, ex.Message);
         }
-
-        await Task.CompletedTask;
     }
 
     private async Task CloseSocketAsync(ClientWebSocket socket, string reason) {
@@ -473,5 +490,48 @@ public sealed class TwitchEventSubWebSocket {
         catch (Exception ex) {
             OnWebSocketError?.Invoke(this, ex.Message);
         }
+    }
+    
+    private async Task StartKeepAliveWatchdog() {
+        _keepAliveCts?.Cancel();
+        if (_keepAliveTask != null)
+            await _keepAliveTask;
+        
+        _keepAliveCts?.Dispose();
+
+        _keepAliveCts = new CancellationTokenSource();
+        var token = _keepAliveCts.Token;
+
+        _keepAliveTask = Task.Run(async () => { 
+                                      while (!token.IsCancellationRequested) { 
+                                          await Task.Delay(5000, CancellationToken.None);
+                             
+                                          ClientWebSocket? socket;
+                                          lock (_sync) {
+                                              socket = _activeSocket;
+                                          }
+
+                                          if (socket is not { State: WebSocketState.Open, })
+                                              continue;
+
+                                          if (DateTime.UtcNow - _lastKeepAliveUtc <= 
+                                              _keepAliveTimeout + TimeSpan.FromSeconds(10)) {
+                                              continue;
+                                          }
+
+                                          OnWebSocketError?.Invoke(this,
+                                                                   "Keepalive timeout exceeded. Forcing reconnect.");
+
+                                          try {
+                                              await DisconnectAsync();
+                                          }
+                                          catch (Exception ex){
+                                              OnWebSocketError?.Invoke(this, ex.Message);
+                                          }
+
+                                          await ConnectAsync();
+                                          return;
+                                      }
+                                  }, CancellationToken.None);
     }
 }

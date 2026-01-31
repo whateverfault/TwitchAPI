@@ -164,13 +164,8 @@ public class TwitchClient : ITwitchClient {
             _botWebSocket.SetCredentials(Credentials);
             _broadcasterWebSocket.SetCredentials(Credentials);
 
-            var connected = await _botWebSocket.ConnectAsync();
-            connected &= await _broadcasterWebSocket.ConnectAsync();
-            
-            if (!connected) {
-                RaiseError(this, "WebSocket connection failed.");
-                return;
-            }
+            await _botWebSocket.ConnectAsync();
+            await _broadcasterWebSocket.ConnectAsync();
 
             _globalBadges = await Api.ListGlobalBadges(Credentials, RaiseError);
             _channelBadges = await Api.ListChannelBadges(Credentials, RaiseError);

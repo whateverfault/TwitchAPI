@@ -20,6 +20,6 @@ public class SessionData {
         [JsonProperty("keepalive_timeout_seconds")] int? timeout = null) {
         Id = id;
         Status = status;
-        KeepaliveTimeoutSeconds = timeout ?? 300;
+        KeepaliveTimeoutSeconds = timeout ?? 600;
     }
 }

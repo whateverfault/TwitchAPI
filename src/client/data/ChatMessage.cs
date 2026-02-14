@@ -20,6 +20,8 @@ public class ChatMessage {
     
     public Color Color { get; }
     
+    public string? Mention { get; }
+    
     public List<BadgeVersion>? Badges { get; } 
     
     public ChatReply? Reply { get; }
@@ -43,6 +45,7 @@ public class ChatMessage {
         string id,
         string text,
         Color color,
+        string? mention,
         List<BadgeVersion>? badges,
         ChatReply? reply,
         string? rewardId, 
@@ -57,6 +60,7 @@ public class ChatMessage {
         Id = id;
         Text = text;
         Color = color;
+        Mention = mention;
         Badges = badges;
         Reply = reply;
         RewardId = rewardId;
@@ -71,10 +75,12 @@ public class ChatMessage {
         Badge[]? globalBadges = null,
         Badge[]? channelBadges = null) {
         var message = new StringBuilder();
+        var mention = string.Empty;
 
         for (var i = 0; i < e.Message.Fragments.Length; i++) {
             var fragment = e.Message.Fragments[i];
-            if (e.Reply != null && i == 0 && fragment.Type == "mention") {
+            if (i == 0 && fragment.Type == "mention") {
+                mention = fragment.Text;
                 continue;
             }
 
@@ -109,6 +115,7 @@ public class ChatMessage {
                                    e.MessageId,
                                    message.ToString(),
                                    ColorTranslator.FromHtml(e.Color),
+                                   mention,
                                    badges,
                                    e.Reply,
                                    e.RewardId,

@@ -44,6 +44,10 @@ public class CommandParser {
 
         commandText = commandText.Trim();
         commandMessage = GetCommandMessage(end, commandMessage).Trim();
+
+        if (commandIdentifier == ' ' && string.IsNullOrEmpty(commandMessage)) {
+            commandMessage = commandText;
+        }
         
         var argumentsAsList = commandMessage
                              .Split(" ", StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)

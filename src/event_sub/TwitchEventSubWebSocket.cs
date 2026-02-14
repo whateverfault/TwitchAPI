@@ -82,6 +82,8 @@ public sealed class TwitchEventSubWebSocket {
 
         if (_loopTask != null)
             await _loopTask;
+
+        _subscribed = false;
     }
 
     private async Task MainLoopAsync() {

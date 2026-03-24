@@ -77,15 +77,18 @@ public class ChatMessage {
         var message = new StringBuilder();
         var mention = string.Empty;
 
+        var maxMentionIndex = e.Reply == null ? 0 : 2;
         for (var i = 0; i < e.Message.Fragments.Length; i++) {
             var fragment = e.Message.Fragments[i];
-            if (i == 0 && fragment.Type == "mention") {
-                mention = fragment.Text;
+            if (i <= maxMentionIndex && fragment is { Type: "mention", Text.Length: > 1, }) {
+                mention = fragment.Text[1..fragment.Text.Length];
                 continue;
             }
 
             var processed = Sanitize(fragment.Text);
-
+            if (string.IsNullOrEmpty(processed))
+                continue;
+            
             message.Append($"{processed} ");
         }
 

@@ -438,7 +438,7 @@ public class TwitchApi {
 
     public async Task<string?> CreateChannelReward(
     string title,
-    int cost,
+    long cost,
     FullCredentials credentials,
     string? prompt = null,
     bool isEnabled = true,
